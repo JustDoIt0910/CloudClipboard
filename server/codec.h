@@ -36,11 +36,16 @@ typedef std::function<void (const muduo::net::TcpConnectionPtr&,
                             const std::string& message,
                             muduo::Timestamp)> StringMessageCallback;
 
+typedef std::function<void (const muduo::net::TcpConnectionPtr&,
+                            muduo::Timestamp)> HeartbeatCallback;
+
 class Codec {
 
 public:
-    Codec(const AuthMessageCallback& authMsgCb, const StringMessageCallback& strMsgCb):
-        authMessageCallback(authMsgCb), stringMessageCallback(strMsgCb)
+    Codec(const AuthMessageCallback& authMsgCb,
+          const StringMessageCallback& strMsgCb,
+          const HeartbeatCallback hbCb):
+        authMessageCallback(authMsgCb), stringMessageCallback(strMsgCb), heartbeatCallback(hbCb)
     {}
 
 //    +------+----+----+----------+----------+
@@ -60,6 +65,12 @@ public:
 //    +------+-------+
 //    +------+-------+
 //    | 0x4  |  code | fail
+//    +------+-------+
+//    +------+-------+
+//    |  0x5 |  0x0  |  heartbeat
+//    +------+-------+
+//    +------+-------+
+//    |  0x5 |  0x1  |  heartbeat ack
 //    +------+-------+
     void onMessage(const muduo::net::TcpConnectionPtr& conn,
                    muduo::net::Buffer* buf,
@@ -84,8 +95,10 @@ public:
                     buf->retrieve(len1 + len2);
                 }
             }
-            else if(op == OP_DATA && buf->readableBytes() >= 4)
+            else if(op == OP_DATA)
             {
+                if(buf->readableBytes() < 4)
+                    return;
                 char mimeType = *(header + 1);
                 uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 2));
                 if(buf->readableBytes() >= 4 + len)
@@ -100,7 +113,22 @@ public:
                 }
             }
             else
+            {
                 LOG_WARN << "unknown op code [" << op << "]";
+                buf.retrieveAll();
+            }
+        }
+        else if(buf.readableBytes() >= heartBeatLen)
+        {
+            const char* data = buf->peek();
+            if(*data == OP_HEARTBEAT)
+            {
+                if(*(data + 1) == HB_SEND)
+                    xxx;
+                else
+                    LOG_WARN << "invalid heartbeat";
+                buf->retrieve(2);
+            }
         }
     }
 
@@ -109,12 +137,12 @@ public:
         muduo::net::Buffer buf;
         if(success)
         {
-            char tmp[] = {3, op, code};
+            char tmp[] = {OP_SUCCESS_RESP, op, code};
             buf.append(tmp, 3);
         }
         else
         {
-            char tmp[] = {4, op, code};
+            char tmp[] = {OP_FAIL_RESP, op, code};
             buf.append(tmp, 3);
         }
         conn->send(&buf);
@@ -138,14 +166,20 @@ public:
         ERR_USER_NOT_FOUND = -2,
         ERR_WRONG_PASSWORD = -3
     };
-
     enum OpCode
     {
         OP_REG,
         OP_LOGIN,
-        OP_DATA
+        OP_DATA,
+        OP_SUCCESS_RESP,
+        OP_FAIL_RESP,
+        OP_HEARTBEAT
     };
-
+    enum HeartbeatType
+    {
+        HB_SEND,
+        HB_ACK
+    };
     enum MimeType
     {
         MIME_TEXT,
@@ -154,8 +188,10 @@ public:
 
 private:
     const static int minHeaderLen = 3;
+    const static int heartBeatLen = 2;
     AuthMessageCallback authMessageCallback;
     StringMessageCallback stringMessageCallback;
+    HeartbeatCallback  heartbeatCallback;
 };
 
 #endif

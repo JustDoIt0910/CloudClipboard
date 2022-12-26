@@ -22,7 +22,8 @@ public:
     ClipServer(net::EventLoop* loop, const net::InetAddress& listenAddr):
         server(loop, listenAddr, "ClipServer"),
         codec(std::bind(&ClipServer::onAuthMessage, this, _1, _2, _3, _4),
-              std::bind(&ClipServer::onStringMessage, this, _1, _2, _3))
+              std::bind(&ClipServer::onStringMessage, this, _1, _2, _3),
+              std::bind(&ClipServer::onHeartbeat, this, _1, _2))
     {
         server.setConnectionCallback(
                 std::bind(&ClipServer::onConnection, this, _1));
@@ -30,7 +31,11 @@ public:
         server.setThreadNum(4);
     }
 
-    void start() { server.start(); }
+    void start()
+    {
+        server.start();
+        //TODO start timer
+    }
 
 private:
     void onConnection(const net::TcpConnectionPtr& conn)
@@ -145,6 +150,11 @@ private:
             LOG_INFO << message << " -> " << c->peerAddress().toIpPort();
             codec.sendText(c, message);
         }
+    }
+
+    void onHeartbeat(const muduo::net::TcpConnectionPtr& conn, muduo::Timestamp)
+    {
+
     }
 
     typedef std::unordered_set<net::TcpConnectionPtr> ConnectionList;
