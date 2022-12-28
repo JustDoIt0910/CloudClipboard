@@ -37,6 +37,10 @@ typedef std::function<void (const muduo::net::TcpConnectionPtr&,
                             muduo::Timestamp)> StringMessageCallback;
 
 typedef std::function<void (const muduo::net::TcpConnectionPtr&,
+                            const muduo::net::Buffer&,
+                            muduo::Timestamp)> FileDataCallback;
+
+typedef std::function<void (const muduo::net::TcpConnectionPtr&,
                             muduo::Timestamp)> HeartbeatCallback;
 
 class Codec {
@@ -44,8 +48,10 @@ class Codec {
 public:
     Codec(const AuthMessageCallback& authMsgCb,
           const StringMessageCallback& strMsgCb,
-          const HeartbeatCallback hbCb):
-        authMessageCallback(authMsgCb), stringMessageCallback(strMsgCb), heartbeatCallback(hbCb)
+          const FileDataCallback& fileDataCb,
+          const HeartbeatCallback& hbCb):
+        authMessageCallback(authMsgCb), stringMessageCallback(strMsgCb),
+        fileDataCallback(fileDataCb), heartbeatCallback(hbCb)
     {}
 
 //    +------+----+----+----------+----------+
@@ -76,58 +82,67 @@ public:
                    muduo::net::Buffer* buf,
                    muduo::Timestamp receiveTime)
     {
-        if(buf->readableBytes() >= minHeaderLen)
+        while(buf->readableBytes() >= heartBeatLen)
         {
             const char* header = buf->peek();
             char op = *header;
-            if(op == OP_REG || op == OP_LOGIN)
+            if(op == OP_HEARTBEAT)
             {
-                uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 1));
-                char len1 = (len >> 8) & 0xFF;
-                char len2 = len & 0xFF;
-                if(buf->readableBytes() >= 3 + len1 + len2)
-                {
-                    buf->retrieve(3);
-                    std::string user(buf->peek(), len1);
-                    std::string pwd(buf->peek() + len1, len2);
-                    bool reg = op == OP_REG;
-                    authMessageCallback(conn, Auth(user, pwd), reg, receiveTime);
-                    buf->retrieve(len1 + len2);
-                }
-            }
-            else if(op == OP_DATA)
-            {
-                if(buf->readableBytes() < 4)
-                    return;
-                char mimeType = *(header + 1);
-                uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 2));
-                if(buf->readableBytes() >= 4 + len)
-                {
-                    buf->retrieve(4);
-                    if(mimeType == MIME_TEXT)
-                    {
-                        std::string data(buf->peek(), len);
-                        stringMessageCallback(conn, data, receiveTime);
-                    }
-                    buf->retrieve(len);
-                }
-            }
-            else
-            {
-                LOG_WARN << "unknown op code [" << op << "]";
-                buf.retrieveAll();
-            }
-        }
-        else if(buf.readableBytes() >= heartBeatLen)
-        {
-            const char* data = buf->peek();
-            if(*data == OP_HEARTBEAT)
-            {
-                if(*(data + 1) == HB_SEND)
-                    xxx;
+                if(*(header + 1) == HB_SEND)
+                    heartbeatCallback(conn, receiveTime);
                 else
                     LOG_WARN << "invalid heartbeat";
                 buf->retrieve(2);
+            }
+            if(buf->readableBytes() >= minHeaderLen)
+            {
+                if(op == OP_REG || op == OP_LOGIN)
+                {
+                    uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 1));
+                    char len1 = (len >> 8) & 0xFF;
+                    char len2 = len & 0xFF;
+                    if(buf->readableBytes() >= 3 + len1 + len2)
+                    {
+                        buf->retrieve(3);
+                        std::string user(buf->peek(), len1);
+                        std::string pwd(buf->peek() + len1, len2);
+                        bool reg = op == OP_REG;
+                        authMessageCallback(conn, Auth(user, pwd), reg, receiveTime);
+                        buf->retrieve(len1 + len2);
+                    }
+                    else
+                        break;
+                }
+                else if(op == OP_DATA)
+                {
+                    if(buf->readableBytes() < 4)
+                        break;
+                    char mimeType = *(header + 1);
+                    uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 2));
+                    if(buf->readableBytes() >= 4 + len)
+                    {
+                        buf->retrieve(4);
+                        if(mimeType == MIME_TEXT)
+                        {
+                            std::string data(buf->peek(), len);
+                            stringMessageCallback(conn, data, receiveTime);
+                        }
+                        else
+                        {
+                            muduo::net::Buffer data;
+                            data.append(buf->peek(), len);
+                            fileDataCallback(conn, data, receiveTime);
+                        }
+                        buf->retrieve(len);
+                    }
+                    else
+                        break;
+                }
+                else
+                {
+                    LOG_WARN << "unknown op code [" << op << "]";
+                    buf->retrieveAll();
+                }
             }
         }
     }
@@ -152,11 +167,25 @@ public:
     {
         muduo::net::Buffer buf;
         uint16_t len = msg.length();
-        char tmp[] = {2, MIME_TEXT};
+        char tmp[] = {OP_DATA, MIME_TEXT};
         buf.append(tmp, 2);
         buf.appendInt16(static_cast<int16_t>(len));
         buf.append(msg.c_str(), msg.length());
         conn->send(&buf);
+    }
+
+    void sendFile(const muduo::net::TcpConnectionPtr& conn, muduo::net::Buffer& buf)
+    {
+        char header[] = {OP_DATA, MIME_FILE};
+        buf.prependInt16(buf.readableBytes());
+        buf.prepend(header, 2);
+        conn->send(&buf);
+    }
+
+    void sendHeartbeatAck(const muduo::net::TcpConnectionPtr& conn)
+    {
+        char buf[] = {OP_HEARTBEAT, HB_ACK};
+        conn->send(buf, 2);
     }
 
     enum ErrCode
@@ -191,8 +220,8 @@ private:
     const static int heartBeatLen = 2;
     AuthMessageCallback authMessageCallback;
     StringMessageCallback stringMessageCallback;
+    FileDataCallback fileDataCallback;
     HeartbeatCallback  heartbeatCallback;
 };
 
 #endif
-

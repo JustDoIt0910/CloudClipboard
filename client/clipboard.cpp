@@ -6,6 +6,8 @@
 #include <string>
 #include <QAction>
 #include <QMenu>
+#include <QMimeData>
+#include <QApplication>
 
 using namespace std;
 
@@ -62,6 +64,27 @@ Clipboard::Clipboard(QWidget *parent) : QWidget(parent)
         board->setText(data);
     });
 
+    connect(client, &Client::hasFileData, this, [=](QByteArray& data){
+        if(!fp)
+        {
+            filepath = "copy\nfile://"  + QApplication::applicationDirPath();
+            filepath.append("/");
+            filepath.append(data);
+            fp = fopen(data.data(), "wb");
+            return;
+        }
+        if(data.size() == 0)
+        {
+            ::fclose(fp);
+            fp = nullptr;
+            self = true;
+            QMimeData* mime = new QMimeData;
+            mime->setData("x-special/gnome-copied-files", filepath.toLocal8Bit());
+            board->setMimeData(mime);
+        }
+        fwrite(data.data(), 1, data.size(), fp);
+    });
+
     QMenu* menu = new QMenu(this);
     QAction* quit = new QAction("quit",this);
     menu->addAction(quit);
@@ -80,7 +103,13 @@ Clipboard::Clipboard(QWidget *parent) : QWidget(parent)
 void Clipboard::onBoardDataChanged()
 {
     if(!self)
-        client->sendText(board->text());
+    {
+        const QMimeData* data =  board->mimeData();
+        if(data->hasFormat("x-special/gnome-copied-files"))
+            client->sendFile(data->text());
+        else
+            client->sendText(board->text());
+    }
     else
         self = false;
 }

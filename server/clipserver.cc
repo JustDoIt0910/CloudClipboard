@@ -23,7 +23,10 @@ public:
         server(loop, listenAddr, "ClipServer"),
         codec(std::bind(&ClipServer::onAuthMessage, this, _1, _2, _3, _4),
               std::bind(&ClipServer::onStringMessage, this, _1, _2, _3),
-              std::bind(&ClipServer::onHeartbeat, this, _1, _2))
+              std::bind(&ClipServer::onFileData, this, _1, _2, _3),
+              std::bind(&ClipServer::onHeartbeat, this, _1, _2)),
+        connections(new ConnectionMap),
+        namespaceToAddrs(new NamespaceAddrMap)
     {
         server.setConnectionCallback(
                 std::bind(&ClipServer::onConnection, this, _1));
@@ -34,7 +37,8 @@ public:
     void start()
     {
         server.start();
-        //TODO start timer
+        net::EventLoop* loop = server.getLoop();
+        loop->runEvery(20, std::bind(&ClipServer::checkAlive, this));
     }
 
 private:
@@ -46,18 +50,21 @@ private:
 
         if(!conn->connected())
         {
+            std::string addrStr = conn->peerAddress().toIpPort();
             MutexLockGuard lock(mutex);
-            auto it = addrToNamespace.find(conn->peerAddress().toIpPort());
-            if(it != addrToNamespace.end())
+            auto it = connections->find(addrStr);
+            if(it != connections->end())
             {
-                LOG_INFO << "client [" << conn->peerAddress().toIpPort() << "] logout";
-                ConnectionList& conns = namespaceToConns[it->second];
-                conns.erase(conn);
-                if(conns.size() == 0)
-                {
-                    namespaceToConns.erase(it->second);
-                    addrToNamespace.erase(it);
-                }
+                LOG_INFO << "client [" << addrStr << "] logout";
+                if(!namespaceToAddrs.unique())
+                    namespaceToAddrs.reset(new NamespaceAddrMap(*namespaceToAddrs));
+                if(!connections.unique())
+                    connections.reset(new ConnectionMap(*connections));
+
+                (*namespaceToAddrs)[it->second.ns].erase(addrStr);
+                if((*namespaceToAddrs)[it->second.ns].size() == 0)
+                    namespaceToAddrs->erase(it->second.ns);
+                connections->erase(it);
             }
         }
     }
@@ -94,10 +101,17 @@ private:
                 if(auth.pwd == stored.pwd)
                 {
                     LOG_INFO << "user " << auth.user << " login success";
-                    MutexLockGuard lock(mutex);
-                    assert(addrToNamespace.find(conn->peerAddress().toIpPort()) == addrToNamespace.end());
-                    addrToNamespace[conn->peerAddress().toIpPort()] = auth.user;
-                    namespaceToConns[auth.user].insert(conn);
+                    std::string addrStr = conn->peerAddress().toIpPort();
+                    {
+                        MutexLockGuard lock(mutex);
+                        assert(connections->find(addrStr) == connections->end());
+                        if(!namespaceToAddrs.unique())
+                            namespaceToAddrs.reset(new NamespaceAddrMap(*namespaceToAddrs));
+                        if(!connections.unique())
+                            connections.reset(new ConnectionMap(*connections));
+                        (*namespaceToAddrs)[auth.user].insert(addrStr);
+                        (*connections)[addrStr] = Connection(conn, auth.user);
+                    }
                     codec.sendResp(conn, true, Codec::OP_LOGIN, Codec::OK);
                 }
                 else
@@ -137,30 +151,95 @@ private:
     }
 
     void onStringMessage(const muduo::net::TcpConnectionPtr& conn, const std::string& message,
-                         muduo::Timestamp)
+                         muduo::Timestamp receiveTime)
     {
         LOG_INFO << "from [" << conn->peerAddress().toIpPort() << "]: " << message;
-        auto it = addrToNamespace.find(conn->peerAddress().toIpPort());
-        if(it == addrToNamespace.end())
-            return;
-        for(const muduo::net::TcpConnectionPtr& c: namespaceToConns[it->second])
+        onPacket(conn, &message, Codec::MIME_TEXT, receiveTime);
+    }
+
+    void onFileData(const muduo::net::TcpConnectionPtr& conn, const muduo::net::Buffer& buf,
+                    muduo::Timestamp receiveTime)
+    {
+        LOG_INFO << "from [" << conn->peerAddress().toIpPort() << "]: FileData " << buf.readableBytes() << " bytes";
+        onPacket(conn, &buf, Codec::MIME_FILE, receiveTime);
+    }
+
+    void onPacket(const muduo::net::TcpConnectionPtr& conn, const void* data,
+                  Codec::MimeType mime, muduo::Timestamp)
+    {
+        NamespaceAddrMapPtr namespaceToAddrSnapshot;
+        ConnectionMapPtr connectionSnapshot;
+        auto it = connections->cbegin();
         {
-            if(c == conn)
+            MutexLockGuard lock(mutex);
+            it = connections->find(conn->peerAddress().toIpPort());
+            if(it == connections->end())
+                return;
+            namespaceToAddrSnapshot = namespaceToAddrs;
+            connectionSnapshot = connections;
+        }
+        for(const std::string& addr: (*namespaceToAddrSnapshot)[it->second.ns])
+        {
+            if(addr == conn->peerAddress().toIpPort())
                 continue;
-            LOG_INFO << message << " -> " << c->peerAddress().toIpPort();
-            codec.sendText(c, message);
+            if(mime == Codec::MIME_TEXT)
+            {
+                std::string massage = *static_cast<const std::string*>(data);
+                LOG_INFO << massage << " -> " << addr;
+                codec.sendText((*connectionSnapshot)[addr].conn, massage);
+            }
+            else
+            {
+                muduo::net::Buffer buf = *static_cast<const muduo::net::Buffer*>(data);
+                LOG_INFO << "FileData[" << buf.readableBytes() << "] -> " << addr;
+                codec.sendFile((*connectionSnapshot)[addr].conn, buf);
+            }
         }
     }
 
     void onHeartbeat(const muduo::net::TcpConnectionPtr& conn, muduo::Timestamp)
     {
-
+        LOG_INFO << "heartbeat from connection[" << conn->peerAddress().toIpPort() << "]";
+        {
+            MutexLockGuard lock(mutex);
+            (*connections)[conn->peerAddress().toIpPort()].ttl = 3;
+        }
+        codec.sendHeartbeatAck(conn);
     }
 
-    typedef std::unordered_set<net::TcpConnectionPtr> ConnectionList;
+    void checkAlive()
+    {
+        LOG_INFO << "checking alive...";
+        MutexLockGuard lock(mutex);
+        for(auto it = connections->begin(); it != connections->end(); it++)
+        {
+            LOG_INFO << "connection [" << it->first << "] ttl = " << it->second.ttl;
+            if(it->second.ttl-- <= 0)
+            {
+                LOG_INFO << "connection [" << it->first << "] offline";
+                it->second.conn->forceClose();
+            }
+        }
+    }
 
-    std::unordered_map<std::string, ConnectionList> namespaceToConns;
-    std::unordered_map<std::string, std::string> addrToNamespace;
+    struct Connection
+    {
+        net::TcpConnectionPtr conn;
+        std::string ns;
+        int ttl;
+
+        Connection(){}
+        Connection(const net::TcpConnectionPtr& _conn, const std::string& _ns):
+            conn(_conn), ns(_ns), ttl(10){}
+    };
+
+    typedef std::unordered_map<std::string, Connection> ConnectionMap;
+    typedef std::shared_ptr<ConnectionMap> ConnectionMapPtr;
+    typedef std::unordered_map<std::string, std::unordered_set<std::string>> NamespaceAddrMap;
+    typedef std::shared_ptr<NamespaceAddrMap> NamespaceAddrMapPtr;
+
+    NamespaceAddrMapPtr namespaceToAddrs;
+    ConnectionMapPtr connections;
 
     MutexLock mutex;
     Codec codec;
@@ -170,7 +249,10 @@ private:
 int main(int argc, char* argv[])
 {
     net::EventLoop loop;
-    net::InetAddress serverAddr(8090);
+    uint16_t port = 8090;
+    if(argc > 1)
+        port = atoi(argv[1]);
+    net::InetAddress serverAddr(port);
     ClipServer server(&loop, serverAddr);
     server.start();
     loop.loop();

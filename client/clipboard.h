@@ -6,6 +6,7 @@
 #include "client.h"
 #include <QSystemTrayIcon>
 #include <QClipboard>
+#include <stdio.h>
 
 class Clipboard : public QWidget
 {
@@ -22,6 +23,8 @@ private:
     bool self = false;
     QString username, password;
     bool hasLogin = false;
+    FILE* fp = nullptr;
+    QString filepath;
 
     bool checkAccount();
     void onBoardDataChanged();
