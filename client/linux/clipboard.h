@@ -7,6 +7,7 @@
 #include <QSystemTrayIcon>
 #include <QClipboard>
 #include <stdio.h>
+#include <stack>
 
 class Clipboard : public QWidget
 {
@@ -23,10 +24,22 @@ private:
     bool self = false;
     QString username, password;
     bool hasLogin = false;
+
     FILE* fp = nullptr;
-    QString filepath;
+    bool hasDir = false;
+    QString curDir;
+    QString dirUriToPaste;
+    QString fileUriToPaste;
+    std::stack<QString> dirs;
+
 
     bool checkAccount();
+    void onLoginORegister(bool reg, QString username, QString password);
+    void onOperationSuccess(char op);
+    void onOperationFail(char op, Client::ErrCode code);
+    void onHasText(QString data);
+    void onHasFileData(QByteArray& data);
+    void onHasDirInfo(QString dir);
     void onBoardDataChanged();
 };
 

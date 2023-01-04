@@ -41,6 +41,10 @@ typedef std::function<void (const muduo::net::TcpConnectionPtr&,
                             muduo::Timestamp)> FileDataCallback;
 
 typedef std::function<void (const muduo::net::TcpConnectionPtr&,
+                            const std::string&,
+                            muduo::Timestamp)> DirInfoCallback;
+
+typedef std::function<void (const muduo::net::TcpConnectionPtr&,
                             muduo::Timestamp)> HeartbeatCallback;
 
 class Codec {
@@ -49,9 +53,11 @@ public:
     Codec(const AuthMessageCallback& authMsgCb,
           const StringMessageCallback& strMsgCb,
           const FileDataCallback& fileDataCb,
+          const DirInfoCallback& dirInfoCb,
           const HeartbeatCallback& hbCb):
         authMessageCallback(authMsgCb), stringMessageCallback(strMsgCb),
-        fileDataCallback(fileDataCb), heartbeatCallback(hbCb)
+        fileDataCallback(fileDataCb), dirInfoCallback(dirInfoCb),
+        heartbeatCallback(hbCb)
     {}
 
 //    +------+----+----+----------+----------+
@@ -96,6 +102,8 @@ public:
             }
             if(buf->readableBytes() >= minHeaderLen)
             {
+                header = buf->peek();
+                op = *header;
                 if(op == OP_REG || op == OP_LOGIN)
                 {
                     uint16_t len = muduo::net::sockets::networkToHost16(*(const uint16_t*)(header + 1));
@@ -127,11 +135,16 @@ public:
                             std::string data(buf->peek(), len);
                             stringMessageCallback(conn, data, receiveTime);
                         }
-                        else
+                        else if(mimeType == MIME_FILE)
                         {
                             muduo::net::Buffer data;
                             data.append(buf->peek(), len);
                             fileDataCallback(conn, data, receiveTime);
+                        }
+                        else
+                        {
+                            std::string dir(buf->peek(), len);
+                            dirInfoCallback(conn, dir, receiveTime);
                         }
                         buf->retrieve(len);
                     }
@@ -182,6 +195,16 @@ public:
         conn->send(&buf);
     }
 
+    void sendDirInfo(const muduo::net::TcpConnectionPtr& conn, std::string& dir)
+    {
+        muduo::net::Buffer buf;
+        char tmp[] = {OP_DATA, MIME_DIR};
+        buf.append(tmp, 2);
+        buf.appendInt16(static_cast<int16_t>(dir.length()));
+        buf.append(dir.c_str(), dir.length());
+        conn->send(&buf);
+    }
+
     void sendHeartbeatAck(const muduo::net::TcpConnectionPtr& conn)
     {
         char buf[] = {OP_HEARTBEAT, HB_ACK};
@@ -212,7 +235,8 @@ public:
     enum MimeType
     {
         MIME_TEXT,
-        MIME_FILE
+        MIME_FILE,
+        MIME_DIR
     };
 
 private:
@@ -221,6 +245,7 @@ private:
     AuthMessageCallback authMessageCallback;
     StringMessageCallback stringMessageCallback;
     FileDataCallback fileDataCallback;
+    DirInfoCallback dirInfoCallback;
     HeartbeatCallback  heartbeatCallback;
 };
 

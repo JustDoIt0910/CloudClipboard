@@ -24,6 +24,7 @@ public:
         codec(std::bind(&ClipServer::onAuthMessage, this, _1, _2, _3, _4),
               std::bind(&ClipServer::onStringMessage, this, _1, _2, _3),
               std::bind(&ClipServer::onFileData, this, _1, _2, _3),
+              std::bind(&ClipServer::onDirInfo, this, _1, _2, _3),
               std::bind(&ClipServer::onHeartbeat, this, _1, _2)),
         connections(new ConnectionMap),
         namespaceToAddrs(new NamespaceAddrMap)
@@ -164,6 +165,13 @@ private:
         onPacket(conn, &buf, Codec::MIME_FILE, receiveTime);
     }
 
+    void onDirInfo(const muduo::net::TcpConnectionPtr& conn, const std::string dir,
+                   muduo::Timestamp receiveTime)
+    {
+        LOG_INFO << "from [" << conn->peerAddress().toIpPort() << "]: DirInfo :" << dir;
+        onPacket(conn, &dir, Codec::MIME_DIR, receiveTime);
+    }
+
     void onPacket(const muduo::net::TcpConnectionPtr& conn, const void* data,
                   Codec::MimeType mime, muduo::Timestamp)
     {
@@ -188,11 +196,17 @@ private:
                 LOG_INFO << massage << " -> " << addr;
                 codec.sendText((*connectionSnapshot)[addr].conn, massage);
             }
-            else
+            else if(mime == Codec::MIME_FILE)
             {
                 muduo::net::Buffer buf = *static_cast<const muduo::net::Buffer*>(data);
                 LOG_INFO << "FileData[" << buf.readableBytes() << "] -> " << addr;
                 codec.sendFile((*connectionSnapshot)[addr].conn, buf);
+            }
+            else
+            {
+                std::string dir = *static_cast<const std::string*>(data);
+                LOG_INFO << "Dir[" << dir << "] -> " << addr;
+                codec.sendDirInfo((*connectionSnapshot)[addr].conn, dir);
             }
         }
     }
