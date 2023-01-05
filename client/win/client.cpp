@@ -71,7 +71,7 @@ void Client::decode()
             inputBuf.remove(0, 2);
         }
         if(inputBuf.size() >= 3)
-        {file:///F:/qtProjects/build-clipboard-Desktop_Qt_5_12_0_MinGW_64_bit-Release/release/fileRecv/'0
+        {
             if(inputBuf.at(0) == OP_SUCCESS_RESP || inputBuf.at(0) == OP_FAIL_RESP)
             {
                 if(inputBuf.at(0) == OP_SUCCESS_RESP)
