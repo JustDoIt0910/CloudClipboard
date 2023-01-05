@@ -1,10 +1,14 @@
-#include "client.h"
+﻿#include "client.h"
 #include <QHostAddress>
 #include <QCryptographicHash>
 #include <QtEndian>
 #include <QThread>
 #include <stdio.h>
+#ifdef Q_CC_MSVC
+#include <QDir>
+#else
 #include <dirent.h>
+#endif
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -187,6 +191,31 @@ void Client::sendDir(QString &base)
 
 void Client::_sendDir(QString &base)
 {
+#ifdef Q_CC_MSVC
+    QDir dir;
+    QStringList strList = dir.entryList();
+    struct stat st;
+    QString filepath;
+    QByteArray pkt;
+    for (auto s : strList) {
+        filepath = base + "/" + codec->toUnicode(s.toStdString().data());
+        if(strcmp("..", s.toStdString().data()) == 0 || strcmp(".", s.toStdString().data()) == 0)
+            continue;
+        if(::stat(codec->fromUnicode(filepath).data(), &st) != 0)
+            return;
+        if(st.st_mode == _S_IFDIR)
+        {
+            pkt = makeHeader(MIME_DIR, s.length());
+            pkt.append(s);
+            client->write(pkt);
+            _sendDir(filepath);
+            pkt = makeHeader(MIME_DIR, 0);
+            client->write(pkt);
+        }
+        else
+            sendFile(filepath);
+    }
+#else
     DIR* dir = nullptr;
     struct dirent* entry = nullptr;
     struct stat st;
@@ -214,6 +243,7 @@ void Client::_sendDir(QString &base)
             sendFile(filepath);
     }
     ::closedir(dir);
+#endif
 }
 
 QByteArray Client::makeHeader(MimeType mime, quint16 len)

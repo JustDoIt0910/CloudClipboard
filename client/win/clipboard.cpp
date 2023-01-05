@@ -1,4 +1,4 @@
-#include "clipboard.h"
+﻿#include "clipboard.h"
 #include "QMessageBox"
 #include <QKeyEvent>
 #include <QGuiApplication>
@@ -10,6 +10,10 @@
 #include <QApplication>
 #include <sys/types.h>
 #include <sys/stat.h>
+
+#ifdef Q_CC_MSVC
+#include <direct.h>
+#endif
 
 using namespace std;
 
@@ -31,7 +35,11 @@ Clipboard::Clipboard(QWidget *parent) : QWidget(parent)
     curDir = QApplication::applicationDirPath() + "/fileRecv";
     struct stat st;
     if(::stat(codec->fromUnicode(curDir).data(), &st) != 0)
+#ifdef Q_CC_MSVC
+        _mkdir(codec->fromUnicode(curDir).data());
+#else
         mkdir(codec->fromUnicode(curDir).data());
+#endif
 
     QMenu* menu = new QMenu(this);
     QAction* quit = new QAction("quit",this);
@@ -135,7 +143,11 @@ void Clipboard::onHasDirInfo(QString dir)
             dirUriToPaste = "file:///" + newDir;
         }
         dirs.push(curDir);
+#ifdef Q_CC_MSVC
+        _mkdir(codec->fromUnicode(newDir).data());
+#else
         ::mkdir(codec->fromUnicode(newDir).data());
+#endif
         curDir = newDir;
     }
     else
@@ -164,7 +176,11 @@ void Clipboard::onBoardDataChanged()
             struct stat st;
             if(::stat(codec->fromUnicode(path).data(), &st) == 0)
             {
+#ifdef Q_CC_MSVC
+                if (st.st_mode == _S_IFDIR)
+#else
                 if(S_ISDIR(st.st_mode))
+#endif
                     client->sendDir(path);
                 else
                     client->sendFile(path);
