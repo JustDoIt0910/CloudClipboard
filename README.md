@@ -30,6 +30,7 @@
 cd server
 cmake .
 make
+stdbuf -i0 -o0 -e0 nohup ./server &
 ```
 
 #### client
